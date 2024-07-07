@@ -5,10 +5,12 @@ from datetime import datetime
 from turbopuffer.error import APIError
 from turbopuffer.vectors import Cursor, VectorResult, VectorColumns, VectorRow, batch_iter
 from turbopuffer.backend import Backend
-from turbopuffer.query import VectorQuery, Filters
-from typing import Dict, List, Optional, Iterable, Union, overload
+from turbopuffer.query import VectorQuery, Filters, RankInput, ConsistencyDict
+from typing import Dict, List, Literal, Optional, Iterable, Union, overload
 import turbopuffer as tpuf
-from turbopuffer.query import RankInput
+
+CmekDict = Dict[Literal['key_name'], str]
+EncryptionDict = Dict[Literal['cmek'], CmekDict]
 
 class FullTextSearchParams:
     """
@@ -92,7 +94,7 @@ class Namespace:
 
     metadata: Optional[dict] = None
 
-    def __init__(self, name: str, api_key: Optional[str] = None):
+    def __init__(self, name: str, api_key: Optional[str] = None, headers: Optional[dict] = None):
         """
         Creates a new turbopuffer.Namespace object for querying the turbopuffer API.
 
@@ -101,7 +103,7 @@ class Namespace:
         Specifying an api_key here will override the global configuration for API calls to this namespace.
         """
         self.name = name
-        self.backend = Backend(api_key)
+        self.backend = Backend(api_key, headers)
 
     def __str__(self) -> str:
         return f'tpuf-namespace:{self.name}'
@@ -185,13 +187,27 @@ class Namespace:
         response = self.backend.make_api_request('namespaces', self.name, 'schema', method='POST', payload=request_payload)
         return parse_namespace_schema(response["content"])
 
+    def copy_from_namespace(self, source_namespace: str):
+        """
+        Copies all documents from another namespace to this namespace.
+
+        See: https://turbopuffer.com/docs/upsert#parameters `copy_from_namespace`
+        for specifics on how this works.
+        """
+        payload = {
+            "copy_from_namespace": source_namespace
+        }
+        response = self.backend.make_api_request('namespaces', self.name, payload=payload)
+        assert response.get('content', dict()).get('status', '') == 'OK', f'Invalid copy_from_namespace() response: {response}'
+
     @overload
     def upsert(self,
                ids: Union[List[int], List[str]],
                vectors: List[List[float]],
                attributes: Optional[Dict[str, List[Optional[Union[str, int]]]]] = None,
                schema: Optional[Dict] = None,
-               distance_metric: Optional[str] = None) -> None:
+               distance_metric: Optional[str] = None,
+               encryption: Optional[EncryptionDict] = None) -> None:
         """
         Creates or updates multiple vectors provided in a column-oriented layout.
         If this call succeeds, data is guaranteed to be durably written to object storage.
@@ -201,7 +217,11 @@ class Namespace:
         ...
 
     @overload
-    def upsert(self, data: Union[dict, VectorColumns], distance_metric: Optional[str] = None, schema: Optional[Dict] = None) -> None:
+    def upsert(self,
+               data: Union[dict, VectorColumns],
+               distance_metric: Optional[str] = None,
+               schema: Optional[Dict] = None,
+               encryption: Optional[EncryptionDict] = None) -> None:
         """
         Creates or updates multiple vectors provided in a column-oriented layout.
         If this call succeeds, data is guaranteed to be durably written to object storage.
@@ -211,8 +231,11 @@ class Namespace:
         ...
 
     @overload
-    def upsert(self, data: Union[Iterable[dict], Iterable[VectorRow]],
-               distance_metric: Optional[str] = None, schema: Optional[Dict] = None) -> None:
+    def upsert(self,
+               data: Union[Iterable[dict], Iterable[VectorRow]],
+               distance_metric: Optional[str] = None,
+               schema: Optional[Dict] = None,
+               encryption: Optional[EncryptionDict] = None) -> None:
         """
         Creates or updates a multiple vectors provided as a list or iterator.
         If this call succeeds, data is guaranteed to be durably written to object storage.
@@ -222,8 +245,11 @@ class Namespace:
         ...
 
     @overload
-    def upsert(self, data: VectorResult,
-               distance_metric: Optional[str] = None, schema: Optional[Dict] = None) -> None:
+    def upsert(self,
+               data: VectorResult,
+               distance_metric: Optional[str] = None,
+               schema: Optional[Dict] = None,
+               encryption: Optional[EncryptionDict] = None) -> None:
         """
         Creates or updates multiple vectors.
         If this call succeeds, data is guaranteed to be durably written to object storage.
@@ -232,15 +258,22 @@ class Namespace:
         """
         ...
 
-    def upsert(self, data=None, ids=None, vectors=None, attributes=None, schema=None, distance_metric=None) -> None:
+    def upsert(self,
+               data=None,
+               ids=None,
+               vectors=None,
+               attributes=None,
+               schema=None,
+               distance_metric=None,
+               encryption= None) -> None:
         if data is None:
             if ids is not None and vectors is not None:
-                return self.upsert(VectorColumns(ids=ids, vectors=vectors, attributes=attributes), schema=schema, distance_metric=distance_metric)
+                return self.upsert(VectorColumns(ids=ids, vectors=vectors, attributes=attributes), schema=schema, distance_metric=distance_metric, encryption=encryption)
             else:
                 raise ValueError('upsert() requires both ids= and vectors= be set.')
         elif (ids is not None and attributes is None) or (attributes is not None and schema is None):
             # Offset arguments to handle positional arguments case with no data field.
-            return self.upsert(VectorColumns(ids=data, vectors=ids, attributes=vectors), schema=attributes, distance_metric=distance_metric,)
+            return self.upsert(VectorColumns(ids=data, vectors=ids, attributes=vectors), schema=attributes, distance_metric=distance_metric, encryption=encryption)
         elif isinstance(data, VectorColumns):
             # "if None in data.vectors:" is not supported because data.vectors might be a list of np.ndarray
             # None == pd.ndarray is an ambiguous comparison in this case.
@@ -255,6 +288,9 @@ class Namespace:
 
             if schema is not None:
                 payload["schema"] = schema
+            
+            if encryption is not None:
+                payload["encryption"] = encryption
 
             response = self.backend.make_api_request('namespaces', self.name, payload=payload)
 
@@ -264,12 +300,12 @@ class Namespace:
             raise ValueError('upsert() should be called on a list of vectors, got single vector.')
         elif isinstance(data, list):
             if isinstance(data[0], dict):
-                return self.upsert(VectorColumns.from_rows(data), schema=schema, distance_metric=distance_metric)
+                return self.upsert(VectorColumns.from_rows(data), schema=schema, distance_metric=distance_metric, encryption=encryption)
             elif isinstance(data[0], VectorRow):
-                return self.upsert(VectorColumns.from_rows(data), schema=schema, distance_metric=distance_metric)
+                return self.upsert(VectorColumns.from_rows(data), schema=schema, distance_metric=distance_metric, encryption=encryption)
             elif isinstance(data[0], VectorColumns):
                 for columns in data:
-                    self.upsert(columns, schema=schema, distance_metric=distance_metric)
+                    self.upsert(columns, schema=schema, distance_metric=distance_metric, encryption=encryption)
                 return
             else:
                 raise ValueError(f'Unsupported list data type: {type(data[0])}')
@@ -277,7 +313,7 @@ class Namespace:
             if 'id' in data:
                 raise ValueError('upsert() should be called on a list of vectors, got single vector.')
             elif 'ids' in data:
-                return self.upsert(VectorColumns.from_dict(data), schema=data.get('schema', None), distance_metric=distance_metric)
+                return self.upsert(VectorColumns.from_dict(data), schema=data.get('schema', None), distance_metric=distance_metric, encryption=encryption)
             else:
                 raise ValueError('Provided dict is missing ids.')
         elif 'pandas' in sys.modules and isinstance(data, sys.modules['pandas'].DataFrame):
@@ -301,7 +337,7 @@ class Namespace:
                 # print(f"Batch {columns.ids[0]}..{columns.ids[-1]} begin:", time_diff, '/', len(batch), '=', len(batch)/time_diff)
                 # before = time.monotonic()
                 # print(columns)
-                self.upsert(columns, schema=schema, distance_metric=distance_metric)
+                self.upsert(columns, schema=schema, distance_metric=distance_metric, encryption=encryption)
                 # time_diff = time.monotonic() - before
                 # print(f"Batch {columns.ids[0]}..{columns.ids[-1]} time:", time_diff, '/', len(batch), '=', len(batch)/time_diff)
                 # start = time.monotonic()
@@ -312,7 +348,7 @@ class Namespace:
                 # time_diff = time.monotonic() - start
                 # print('Batch begin:', time_diff, '/', len(batch), '=', len(batch)/time_diff)
                 # before = time.monotonic()
-                self.upsert(batch, schema=schema, distance_metric=distance_metric)
+                self.upsert(batch, schema=schema, distance_metric=distance_metric, encryption=encryption)
                 # time_diff = time.monotonic() - before
                 # print('Batch time:', time_diff, '/', len(batch), '=', len(batch)/time_diff)
                 # start = time.monotonic()
@@ -341,6 +377,15 @@ class Namespace:
         assert response.get('content', dict()).get('status', '') == 'OK', f'Invalid delete() response: {response}'
         self.metadata = None  # Invalidate cached metadata
 
+    def delete_by_filter(self, filters: Filters) -> int:
+        response = self.backend.make_api_request('namespaces', self.name, payload={
+            'delete_by_filter': filters
+        })
+        response_content = response.get('content', dict())
+        assert response_content.get('status', '') == 'OK', f'Invalid delete_by_filter() response: {response}'
+        self.metadata = None  # Invalidate cached metadata
+        return response_content.get('rows_affected')
+
     @overload
     def query(self,
               vector: Optional[List[float]] = None,
@@ -350,6 +395,7 @@ class Namespace:
               include_attributes: Optional[Union[List[str], bool]] = None,
               filters: Optional[Filters] = None,
               rank_by: Optional[RankInput] = None,
+              consistency: Optional[ConsistencyDict] = None
               ) -> VectorResult:
         ...
 
@@ -369,7 +415,8 @@ class Namespace:
               include_vectors=None,
               include_attributes=None,
               filters=None,
-              rank_by=None) -> VectorResult:
+              rank_by=None,
+              consistency=None) -> VectorResult:
         """
         Searches vectors matching the search query.
 
@@ -384,7 +431,8 @@ class Namespace:
                 include_vectors=include_vectors,
                 include_attributes=include_attributes,
                 filters=filters,
-                rank_by=rank_by
+                rank_by=rank_by,
+                consistency=consistency
             ))
         if not isinstance(query_data, VectorQuery):
             if isinstance(query_data, dict):
@@ -405,7 +453,8 @@ class Namespace:
                      include_vectors: Optional[bool] = None,
                      include_attributes: Optional[Union[List[str], bool]] = None,
                      filters: Optional[Filters] = None,
-                     rank_by: Optional[List[Union[str, List[str]]]] = None,
+                     rank_by: Optional[RankInput] = None,
+                     consistency: Optional[ConsistencyDict] = None
                      ) -> VectorResult:
         ...
 
@@ -425,7 +474,8 @@ class Namespace:
                      include_vectors=None,
                      include_attributes=None,
                      filters=None,
-                     rank_by=None) -> VectorResult:
+                     rank_by=None,
+                     consistency=None) -> VectorResult:
         """
         Asynchronously searches vectors matching the search query.
 
@@ -440,7 +490,8 @@ class Namespace:
                 include_vectors=include_vectors,
                 include_attributes=include_attributes,
                 filters=filters,
-                rank_by=rank_by
+                rank_by=rank_by,
+                consistency=consistency
             )
         elif not isinstance(query_data, VectorQuery):
             if isinstance(query_data, dict):
@@ -448,7 +499,7 @@ class Namespace:
             else:
                 raise ValueError(f'aquery() input type must be compatible with turbopuffer.VectorQuery: {type(query_data)}')
 
-        response = await self.backend.make_api_request_async('vectors', self.name, 'query', payload=query_data.__dict__)
+        response = await self.backend.make_api_request_async('namespaces', self.name, 'query', payload=query_data.__dict__)
         result = VectorResult(response.get('content', dict()), namespace=self)
         result.performance = response.get('performance')
         return result

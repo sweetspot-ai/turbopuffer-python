@@ -32,19 +32,24 @@ class Backend:
     api_key: str
     api_base_url: str
     session: requests.Session
+    headers: Optional[dict]
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, headers: Optional[dict] = None):
         self.api_key = find_api_key(api_key)
         self.api_base_url = clean_api_base_url(tpuf.api_base_url)
+        self.headers = headers
         self.session = requests.Session()
         self.session.headers.update({
             'Authorization': f'Bearer {self.api_key}',
             'User-Agent': f'tpuf-python/{tpuf.VERSION} {requests.utils.default_headers()["User-Agent"]}',
         })
+        
+        if headers is not None:
+            self.session.headers.update(headers)
 
     def __eq__(self, other):
         if isinstance(other, Backend):
-            return self.api_key == other.api_key and self.api_base_url == other.api_base_url
+            return self.api_key == other.api_key and self.api_base_url == other.api_base_url and self.headers == other.headers
         else:
             return False
 
@@ -151,7 +156,6 @@ class Backend:
                     time.sleep(2 ** retry_attempt)  # exponential falloff up to 64 seconds for 6 retries.
                 else:
                     print(f'Request failed after {retry_attempt} attempts...')
-
                     if isinstance(err, requests.HTTPError):
                         raise_api_error(err.response.status_code,
                                    f'Request to {err.request.url} failed after {retry_attempt} attempts',
@@ -197,8 +201,14 @@ class Backend:
             }
             data = gzip_payload
 
+        if self.headers is not None:
+            if not headers:
+                headers = {}
+            headers.update(self.headers)
+
         retry_attempt = 0
-        async with aiohttp.ClientSession() as session:
+        timeouts = aiohttp.ClientTimeout(connect=tpuf.connect_timeout, total=tpuf.read_timeout)
+        async with aiohttp.ClientSession(timeout=timeouts) as session:
             while retry_attempt < tpuf.max_retries:
                 request_start = time.monotonic()
                 try:
@@ -247,19 +257,17 @@ class Backend:
                         else:
                             raise_api_error(response.status, 'Server returned non-JSON response', await response.text())
 
-                except aiohttp.ClientError as http_err:
+                except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                     retry_attempt += 1
                     if retry_attempt < tpuf.max_retries:
                         await asyncio.sleep(2 ** retry_attempt)  # exponential falloff up to 64 seconds for 6 retries.
                     else:
                         print(f'Request failed after {retry_attempt} attempts...')
-                        raise_api_error(getattr(http_err, 'status', None),
+                        if isinstance(err, aiohttp.ClientResponseError):
+                            raise_api_error(err.status,
                                         f'Request to {url} failed after {retry_attempt} attempts',
-                                        str(http_err))
-
-                    if isinstance(err, requests.HTTPError):
-                        raise_api_error(err.response.status_code,
-                                   f'Request to {err.request.url} failed after {retry_attempt} attempts',
-                                   str(err))
-                    else:
-                        raise
+                                        str(err))
+                        else:
+                            raise_api_error(None,
+                                        f'Request to {url} failed after {retry_attempt} attempts',
+                                        str(err))
