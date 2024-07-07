@@ -54,48 +54,48 @@ def test_upsert_rows():
     for i in range(10, 100):
         assert results[i-8] == tpuf.VectorRow(id=i, vector=[i/10, i/10], attributes={'test': 'rows'})
 
-    # Check to ensure recall is working
-    ns.recall()
-
 @pytest.mark.xdist_group(name="group1")
 def test_delete_vectors():
     ns = tpuf.Namespace(tests.test_prefix + 'client_test')
 
     # Test upsert delete columns
-    ns.upsert(ids=[2], vectors=[None])
-    results = ns.vectors()
-    assert len(results) == 91, "Got wrong number of vectors back"
-    assert results[0] == tpuf.VectorRow(id=7, vector=[0.7, 0.7], attributes={'hello': 'world'})
+    try:
+        ns.upsert(ids=[6], vectors=[None])
+        assert False, "Upserting to delete should not be allowed"
+    except ValueError as err:
+        assert err.args == ('upsert() call would result in a vector deletion, use Namespace.delete([ids...]) instead.',)
 
     # Test upsert delete typed row
-    ns.upsert([tpuf.VectorRow(id=10)])
-    results = ns.vectors()
-    assert len(results) == 90, "Got wrong number of vectors back"
-    assert results[1] == tpuf.VectorRow(id=11, vector=[1.1, 1.1], attributes={'test': 'rows'})
+    try:
+        ns.upsert([tpuf.VectorRow(id=2)])
+        assert False, "Upserting to delete should not be allowed"
+    except ValueError as err:
+        assert err.args == ('upsert() call would result in a vector deletion, use Namespace.delete([ids...]) instead.',)
 
-    ns.upsert([tpuf.VectorRow(id=11, dist=5)])
-    results = ns.vectors()
-    assert len(results) == 89, "Got wrong number of vectors back"
-    assert results[1] == tpuf.VectorRow(id=12, vector=[1.2, 1.2], attributes={'test': 'rows'})
+    try:
+        ns.upsert([tpuf.VectorRow(id=2, dist=5)])
+        assert False, "Upserting to delete should not be allowed"
+    except ValueError as err:
+        assert err.args == ('upsert() call would result in a vector deletion, use Namespace.delete([ids...]) instead.',)
 
     # Test upsert delete dict row
-    ns.upsert([{'id': 12}])
-    results = ns.vectors()
-    assert len(results) == 88, "Got wrong number of vectors back"
-    assert results[1] == tpuf.VectorRow(id=13, vector=[1.3, 1.3], attributes={'test': 'rows'})
+    try:
+        ns.upsert([{'id': 6}])
+        assert False, "Upserting to delete should not be allowed"
+    except ValueError as err:
+        assert err.args == ('upsert() call would result in a vector deletion, use Namespace.delete([ids...]) instead.',)
 
     # Test delete single row
-    ns.delete(13)
+    ns.delete(2)
     # Test delete multi row
-    ns.delete([14, 15, 16])
+    ns.delete([10, 11, 12, 13, 14, 15])
 
     # Check to make sure the vectors were removed
     results = ns.vectors()
-    assert len(results) == 84, "Got wrong number of vectors back"
+    assert len(results) == 85, "Got wrong number of vectors back"
     assert results[0] == tpuf.VectorRow(id=7, vector=[0.7, 0.7], attributes={'hello': 'world'})
-    for i in range(17, 100):
-        assert results[i-16] == tpuf.VectorRow(id=i, vector=[i/10, i/10], attributes={'test': 'rows'})
-
+    for i in range(16, 100):
+        assert results[i-15] == tpuf.VectorRow(id=i, vector=[i/10, i/10], attributes={'test': 'rows'})
 
 @pytest.mark.xdist_group(name="group1")
 def test_upsert_columns():
@@ -313,6 +313,7 @@ async def test_async_query():
         distance_metric='euclidean_squared',
         include_vectors=True,
         include_attributes=['hello'],
+<<<<<<< HEAD
     )
     for i in range(len(vector_set)):  # Use VectorResult in index mode
         check_result(vector_set[i], expected[i])
@@ -399,28 +400,90 @@ async def test_async_query():
     vector_set = ns.query(
         top_k=3,
         consistency={'level': 'eventual'}
+=======
+>>>>>>> 5096bdb (adding: async query maker in backend with tests + namespace integration)
     )
-    assert len(vector_set) == 3
+    for i in range(len(vector_set)):  # Use VectorResult in index mode
+        check_result(vector_set[i], expected[i])
 
-    # Test query with no consistency dict key should fail
-    try:
-        ns.query(
-            top_k=3,
-            consistency='eventual'
-        )
-        assert False, "Using consistency without a dict that has a 'level' key should not be allowed"
-    except ValueError as err:
-        assert err.args == ("VectorQuery.consistency must be a dict with a 'level' key",)
+    # Test query with dict
+    vector_set = await ns.aquery({
+        'top_k': 5,
+        'vector': [0.8, 0.7],
+        'distance_metric': 'euclidean_squared',
+        'include_vectors': True,
+        'include_attributes': ['hello'],
+    })
+    for i in range(len(vector_set)):  # Use VectorResult in index mode
+        check_result(vector_set[i], expected[i])
 
-    # Test query with 'nonexistentvalue' consistency should fail
-    try:
-        ns.query(
-            top_k=3,
-            consistency={'level': 'nonexistentvalue'}
-        )
-        assert False, "Using consistency level other than 'strong' or 'eventual' should not be allowed"
-    except ValueError as err:
-        assert err.args == ("VectorQuery.consistency level must be 'strong' or 'eventual', got:", 'nonexistentvalue')
+    # Test query with all attributes
+    vector_set = await ns.aquery(
+        top_k=5,
+        vector=[0.8, 0.7],
+        distance_metric='euclidean_squared',
+        include_vectors=True,
+        include_attributes=True
+    )
+    expected = [
+        tpuf.VectorRow(id=7, vector=[0.7, 0.7], dist=0.01, attributes={'hello': 'world'}),
+        tpuf.VectorRow(id=10, vector=[1.0, 1.0], dist=0.13, attributes={'test': 'cols'}),
+        tpuf.VectorRow(id=11, vector=[1.1, 1.1], dist=0.25, attributes={'test': 'cols'}),
+        tpuf.VectorRow(id=3, vector=[0.3, 0.3], dist=0.41, attributes={'test': 'cols', 'key1': 'three', 'key2': 'c'}),
+        tpuf.VectorRow(id=6, vector=[0.3, 0.3], dist=0.41, attributes={'test': 'cols', 'key1': 'three', 'key2': 'c'}),
+    ]
+    for i in range(len(vector_set)):  # Use VectorResult in index mode
+        check_result(vector_set[i], expected[i])
+
+    # Test query with typed query
+    vector_set = await ns.aquery(tpuf.VectorQuery(
+        top_k=5,
+        vector=[1.5, 1.6],
+        distance_metric='euclidean_squared',
+    ))
+    expected = [
+        tpuf.VectorRow(id=15, dist=0.01),
+        tpuf.VectorRow(id=16, dist=0.01),
+        tpuf.VectorRow(id=14, dist=0.05),
+        tpuf.VectorRow(id=17, dist=0.05),
+        tpuf.VectorRow(id=18, dist=0.13),
+    ]
+    i = 0
+    for row in vector_set:  # Use VectorResult in iterator mode
+        check_result(row, expected[i])
+        i += 1
+
+    # Test query with single filter
+    expected = [
+        tpuf.VectorRow(id=10),
+        tpuf.VectorRow(id=11),
+        tpuf.VectorRow(id=12),
+    ]
+    vector_set = await ns.aquery(
+        top_k=3,
+        include_vectors=False,
+        filters={
+            'id': ['In', [10, 11, 12]]
+        },
+    )
+    for i in range(len(vector_set)):  # Use VectorResult in index mode
+        check_result(vector_set[i], expected[i])
+
+    # Test query with no vectors
+    expected = [
+        tpuf.VectorRow(id=10),
+        tpuf.VectorRow(id=11),
+        tpuf.VectorRow(id=12),
+    ]
+    vector_set = await ns.aquery(
+        top_k=3,
+        include_vectors=False,
+        filters={
+            'id': [['In', [10, 11, 12]]]
+        },
+    )
+    for i in range(len(vector_set)):  # Use VectorResult in index mode
+        check_result(vector_set[i], expected[i])
 
 @pytest.mark.xdist_group(name="group1")
 def test_list_vectors():
@@ -626,52 +689,3 @@ def test_not_found_error():
             top_k=5,
             vector=[0.0, 0.0],
         )
-
-def test_list_in_empty_namespace():
-    ns = tpuf.Namespace(tests.test_prefix + 'client_test')
-    assert str(ns) == f'tpuf-namespace:{tests.test_prefix}client_test'
-
-    # Test upsert multiple dict rows
-    ns.upsert([
-        {'id': 2, 'vector': [2, 2]},
-        {'id': 7, 'vector': [1, 1]},
-    ], distance_metric='euclidean_squared')
-
-    ns.delete([2, 7])
-
-    assert list(ns.vectors()) == []
-
-def test_delete_by_filter():
-    ns = tpuf.Namespace(tests.test_prefix + 'delete_by_filter')
-
-    ns.upsert([
-        {'id': 5, 'vector': [0.7, 0.7], 'attributes': {'a': 0}},
-        {'id': 6, 'vector': [0.7, 0.7], 'attributes': {'a': 1}},
-        {'id': 7, 'vector': [0.7, 0.7], 'attributes': {'a': 2}},
-        {'id': 8, 'vector': [0.7, 0.7], 'attributes': {'a': 1}},
-        {'id': 9, 'vector': [0.7, 0.7], 'attributes': {'a': 3}},
-    ], distance_metric='euclidean_squared')
-
-    rows_affected = ns.delete_by_filter(['a', 'Eq', 42]) # no-op, nothing matches
-    assert rows_affected == 0
-
-    results = ns.vectors()
-    assert len(results) == 5, "Got wrong number of vectors back"
-
-    rows_affected = ns.delete_by_filter(['a', 'Eq', 1])
-    assert rows_affected == 2
-
-    results = ns.vectors()
-    assert len(results) == 3, "Got wrong number of vectors back"
-    assert results[0].id == 5
-    assert results[1].id == 7
-    assert results[2].id == 9
-
-    rows_affected = ns.delete_by_filter(['a', 'Gt', 0])
-    assert rows_affected == 2
-
-    results = ns.vectors()
-    assert len(results) == 1, "Got wrong number of vectors back"
-    assert results[0].id == 5
-
-    ns.delete_all()
