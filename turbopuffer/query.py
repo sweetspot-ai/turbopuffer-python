@@ -15,12 +15,11 @@ LegacyFilterDict = Dict[str, List[LegacyFilterCondition]]
 
 Filters = Union[Tuple[str, List["Filters"]], FilterCondition, LegacyFilterDict]
 
-TextQueryOp = Union[Literal['BM25']]
-TextAggQueryOp = Union[Literal['Sum']]
-
 RankInputTextQuery = Union[
-    Tuple[str, TextQueryOp, str],
-    Tuple[TextAggQueryOp, Iterable['RankInputTextQuery']],
+    Tuple[str, Literal['BM25'], str],
+    Tuple[Literal['Sum'], Iterable['RankInputTextQuery']],
+    Tuple[Literal['Product'], Tuple[float, Iterable['RankInputTextQuery']]],
+    Tuple[Literal['Product'], Tuple[Iterable['RankInputTextQuery'], float]],
 ]
 
 AttributeOrdering = Union[Literal['asc'], Literal['desc']]
@@ -34,6 +33,7 @@ RankInput = Union[
     List[Union[str, List[str]]],
 ]
 
+ConsistencyDict = Dict[Literal['level'], Literal['strong', 'eventual']]
 
 @dataclass
 class VectorQuery:
@@ -44,6 +44,7 @@ class VectorQuery:
     include_attributes: Optional[Union[List[str], bool]] = None
     filters: Optional[Filters] = None
     rank_by: Optional[RankInput] = None
+    consistency: Optional[ConsistencyDict] = None
 
     def from_dict(source: dict) -> 'VectorQuery':
         return VectorQuery(
@@ -54,6 +55,7 @@ class VectorQuery:
             include_attributes=source.get('include_attributes'),
             filters=source.get('filters'),
             rank_by=source.get('rank_by'),
+            consistency=source.get('consistency'),
         )
 
     def __post_init__(self):
@@ -75,3 +77,8 @@ class VectorQuery:
             for item in self.rank_by:
                 if not isinstance(item, str) and not isinstance(item, list) and not isinstance(item, tuple):
                     raise ValueError('VectorQuery.rank_by elements must be strings, tuples or lists, got:', type(item))
+        if self.consistency is not None:
+            if not isinstance(self.consistency, dict) or 'level' not in self.consistency:
+                raise ValueError("VectorQuery.consistency must be a dict with a 'level' key")
+            if self.consistency['level'] not in ('strong', 'eventual'):
+                raise ValueError("VectorQuery.consistency level must be 'strong' or 'eventual', got:", self.consistency['level'])
